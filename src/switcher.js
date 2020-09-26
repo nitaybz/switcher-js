@@ -41,7 +41,7 @@ class SwitcherUDPMessage {
 
     static is_valid(message_buffer) {
         return !(message_buffer.toString('hex').substr(0, 4) != 'fef0' && 
-                 message_buffer.byteLength() != 165);
+                 message_buffer.byteLength != 165);
     }
 
     extract_ip_addr() {
