@@ -1,6 +1,6 @@
 {
   "name": "switcher-js2",
-  "version": "1.6.6",
+  "version": "1.6.7",
   "description": "switcher smart accessories api (fork of @johnathanvidu)",
   "main": "index.js",
   "dependencies": {
