@@ -115,7 +115,7 @@ class Switcher extends EventEmitter {
 				if (device_type === 'breeze')
 					var remote = udp_message.extract_remote();
 				if (identifier && identifier !== device_id && identifier !== device_name && identifier !== ipaddr) {
-					this.log(`Found ${device_name} (${ipaddr}) - Not the device we're looking for!`);
+					log(`Found ${device_name} (${ipaddr}) - Not the device we're looking for!`);
 					return;
 				}
 
@@ -139,7 +139,7 @@ class Switcher extends EventEmitter {
 
 		if (discovery_timeout);
 		timeout = setTimeout(() => {
-			this.log(`stopping discovery, closing sockets`);
+			log(`stopping discovery, closing sockets`);
 			sockets.forEach(socket => {
 				socket.close();
 				socket = null;
@@ -147,7 +147,7 @@ class Switcher extends EventEmitter {
 		}, discovery_timeout * 1000);
 
 		proxy.close = () => {
-			this.log('closing discover socket');
+			log('closing discover socket');
 			sockets.forEach(socket => {
 				socket.close();
 			})
@@ -170,7 +170,7 @@ class Switcher extends EventEmitter {
 				var device_id = udp_message.extract_device_id();
 				var device_name = udp_message.extract_device_name();
 				if (identifier && identifier !== device_id && identifier !== device_name && identifier !== ipaddr) {
-					this.log(`Found ${device_name} (${ipaddr}) - Not the device we're looking for!`);
+					log(`Found ${device_name} (${ipaddr}) - Not the device we're looking for!`);
 					return;
 				}
 
@@ -290,7 +290,7 @@ class Switcher extends EventEmitter {
 		})
 
 		proxy.close = () => {
-			this.log('closing discover socket');
+			log('closing listen socket');
 			sockets.forEach(socket => {
 				socket.close();
 			})
