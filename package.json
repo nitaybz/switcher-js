@@ -1,14 +1,17 @@
 {
   "name": "switcher-js2",
-  "version": "1.6.7",
+  "version": "1.6.8",
   "description": "switcher smart accessories api (fork of @johnathanvidu)",
   "main": "index.js",
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "dependencies": {
-    "adm-zip": "^0.5.9",
-    "python-struct": "^1.1.2"
+    "adm-zip": "^0.5.17",
+    "python-struct": "^1.1.3"
   },
   "devDependencies": {
-    "eslint": "^8.18.0"
+    "eslint": "^9.39.4"
   },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
