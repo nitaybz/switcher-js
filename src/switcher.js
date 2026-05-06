@@ -33,7 +33,7 @@ const LISTENING_PORTS = [SWITCHER_UDP_PORT, SWITCHER_UDP_PORT2, SWITCHER_UDP_POR
 
 const SWITCHER_TCP_PORT = 9957;
 const SWITCHER_TCP_PORT2 = 10000;
-const OLD_TCP_GROUP = ['power_plug', 'v2_qca', 'v2_esp', 'v3', 'v4', 'mini'];
+const OLD_TCP_GROUP = ['power_plug', 'v2_qca', 'v2_esp', 'v3', 'v4', 'mini', 'on_wall'];
 
 const OFF = 0;
 const ON = 1;
@@ -176,7 +176,7 @@ class Switcher extends EventEmitter {
 				}
 
 				var device_type = udp_message.extract_type();
-				if (['power_plug', 'v2_qca', 'v2_esp', 'v3', 'v4', 'mini'].includes(device_type)) {
+				if (['power_plug', 'v2_qca', 'v2_esp', 'v3', 'v4', 'mini', 'on_wall'].includes(device_type)) {
 					proxy.emit(MESSAGE_EVENT, {
 						device_id: device_id,
 						device_ip: ipaddr,

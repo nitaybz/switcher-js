@@ -30,6 +30,7 @@ const types = {
 	'030b': 'v3',
 	'0317': 'v4',
 	'030f': 'mini',
+	'0321': 'on_wall',
 	'0c01': 'runner',
 	'0c02': 'runner_mini',
 	'0e01': 'breeze',
