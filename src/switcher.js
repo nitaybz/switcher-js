@@ -33,7 +33,7 @@ const LISTENING_PORTS = [SWITCHER_UDP_PORT, SWITCHER_UDP_PORT2, SWITCHER_UDP_POR
 
 const SWITCHER_TCP_PORT = 9957;
 const SWITCHER_TCP_PORT2 = 10000;
-const OLD_TCP_GROUP = ['power_plug', 'v2_qca', 'v2_esp', 'v3', 'v4', 'mini', 'on_wall'];
+const OLD_TCP_GROUP = ['power_plug', 'v2_qca', 'v2_esp', 'v3', 'v4', 'mini'];
 
 const OFF = 0;
 const ON = 1;
@@ -414,18 +414,22 @@ class Switcher extends EventEmitter {
 	}
 
 	async set_default_shutdown(duration = 3600) {
-		var auto_close = this._set_default_shutdown(duration)
-		let p_session = await this._login();
-		let data = "fef05b0002320102" + p_session + "340001000000000000000000" + this._get_time_stamp() + "00000000000000000000f0fe" + this.device_id +
-			"00" + this.phone_id + "0000" + this.device_pass + "00000000000000000000000000000000000000000000000000000000040400" + auto_close;
-		data = this._crc_sign_full_packet_com_key(data, P_KEY);
-		this.log(`sending default_shutdown command | ${duration} seconds`);
-		var socket = await this._getsocket();
-		socket.write(Buffer.from(data, 'hex'));
-		socket.once('data', () => {
-			this.emit(DURATION_CHANGED_EVENT, duration); // todo: add old state and new state
-		});
-
+		try {
+			var auto_close = this._set_default_shutdown(duration)
+			let p_session = await this._login();
+			let data = "fef05b0002320102" + p_session + "340001000000000000000000" + this._get_time_stamp() + "00000000000000000000f0fe" + this.device_id +
+				"00" + this.phone_id + "0000" + this.device_pass + "00000000000000000000000000000000000000000000000000000000040400" + auto_close;
+			data = this._crc_sign_full_packet_com_key(data, P_KEY);
+			this.log(`sending default_shutdown command | ${duration} seconds`);
+			var socket = await this._getsocket();
+			socket.write(Buffer.from(data, 'hex'));
+			socket.once('data', () => {
+				this.emit(DURATION_CHANGED_EVENT, duration); // todo: add old state and new state
+			});
+		} catch (err) {
+			this.log('set_default_shutdown failed:', err && err.message ? err.message : err)
+			this.emit(ERROR_EVENT, err)
+		}
 	}
 
 	async status() {  // refactor
@@ -808,52 +812,56 @@ class Switcher extends EventEmitter {
 
 
 	async _run_power_command(command_type) {
-		let p_session = await this._login();
-		let data = "fef05d0002320102" + p_session + "340001" + "000000000000000000" + this._get_time_stamp() + "00000000000000000000f0fe" + this.device_id +
-			"00" + this.phone_id + "0000" + this.device_pass + "000000000000000000000000000000000000000000000000000000000106000" + command_type;
-		data = this._crc_sign_full_packet_com_key(data, P_KEY);
-		this.log('sending ' + Object.keys({ OFF, ON })[command_type.substr(0, 1)] + ' command');
-		let socket = await this._getsocket();
-		this.log('sending data:')
-		this.log(data)
 		try {
-			socket = await this._getsocket();
+			let p_session = await this._login();
+			let data = "fef05d0002320102" + p_session + "340001" + "000000000000000000" + this._get_time_stamp() + "00000000000000000000f0fe" + this.device_id +
+				"00" + this.phone_id + "0000" + this.device_pass + "000000000000000000000000000000000000000000000000000000000106000" + command_type;
+			data = this._crc_sign_full_packet_com_key(data, P_KEY);
+			this.log('sending ' + Object.keys({ OFF, ON })[command_type.substr(0, 1)] + ' command');
+			let socket = await this._getsocket();
+			this.log('sending data:')
+			this.log(data)
+			socket.write(Buffer.from(data, 'hex'));
+			socket.once('data', (data) => {
+				this.log('data received:')
+				this.log(data.toString('hex'))
+				this.emit(STATE_CHANGED_EVENT, command_type.substr(0, 1));
+			});
 		} catch (err) {
-			this.log(err)
-			return
+			this.log('power command failed:', err && err.message ? err.message : err)
+			this.emit(ERROR_EVENT, err)
 		}
-		socket.write(Buffer.from(data, 'hex'));
-		socket.once('data', (data) => {
-			this.log('data received:')
-			this.log(data.toString('hex'))
-			this.emit(STATE_CHANGED_EVENT, command_type.substr(0, 1));
-		});
 	}
 
 	async _run_general_command(command, precommand = "3701") {
-		let data, p_session
-		if(this.token && (this.device_type === 's11' || this.device_type === 's12' || /^sl(mini)?0\d$/.test(this.device_type))){
-			p_session = await this._login3();
-			this.p_session = null;
-			data = "fef0000003050102" + p_session + "000000" + "000000000000000000" + this._get_time_stamp() + "00000000000000000000f0fe" + this.device_id + 
-				"00" + this.token + this.device_pass + "000000000000000000000000000000000000000000000000000000" + precommand + this._get_command_length(command + "00000000") + command + "00000000"
-		} else {
-			p_session = await this._login2();
-			this.p_session = null;
-			data = "fef0000003050102" + p_session + "000000" + "000000000000000000" + this._get_time_stamp() + "00000000000000000000f0fe" + this.device_id +
-				"00" + this.phone_id + "0000" + this.device_pass + "000000000000000000000000000000000000000000000000000000" + precommand + this._get_command_length(command) + command
-		}
+		try {
+			let data, p_session
+			if(this.token && (this.device_type === 's11' || this.device_type === 's12' || /^sl(mini)?0\d$/.test(this.device_type))){
+				p_session = await this._login3();
+				this.p_session = null;
+				data = "fef0000003050102" + p_session + "000000" + "000000000000000000" + this._get_time_stamp() + "00000000000000000000f0fe" + this.device_id +
+					"00" + this.token + this.device_pass + "000000000000000000000000000000000000000000000000000000" + precommand + this._get_command_length(command + "00000000") + command + "00000000"
+			} else {
+				p_session = await this._login2();
+				this.p_session = null;
+				data = "fef0000003050102" + p_session + "000000" + "000000000000000000" + this._get_time_stamp() + "00000000000000000000f0fe" + this.device_id +
+					"00" + this.phone_id + "0000" + this.device_pass + "000000000000000000000000000000000000000000000000000000" + precommand + this._get_command_length(command) + command
+			}
 
-		data = this._set_message_length(data)
-		data = this._crc_sign_full_packet_com_key(data, P_KEY);
-		var socket = await this._getsocket();
-		this.log('sending data:')
-		this.log(data)
-		socket.write(Buffer.from(data, 'hex'));
-		socket.once('data', (data) => {
-			this.log('data received:')
-			this.log(data.toString('hex'))
-		});
+			data = this._set_message_length(data)
+			data = this._crc_sign_full_packet_com_key(data, P_KEY);
+			var socket = await this._getsocket();
+			this.log('sending data:')
+			this.log(data)
+			socket.write(Buffer.from(data, 'hex'));
+			socket.once('data', (data) => {
+				this.log('data received:')
+				this.log(data.toString('hex'))
+			});
+		} catch (err) {
+			this.log('general command failed:', err && err.message ? err.message : err)
+			this.emit(ERROR_EVENT, err)
+		}
 	}
 
 	_get_time_stamp() {
