@@ -89,6 +89,7 @@ class Switcher extends EventEmitter {
 		this.log = log;
 		this.p_session = null;
 		this.socket = null;
+		this.log(`Switcher init: device_id=${this.device_id} ip=${this.switcher_ip} type=${this.device_type} newType=${this.newType} TCP_PORT=${this.SWITCHER_PORT}`);
 		if (listen)
 			this.status_socket = this._hijack_status_report();
 		if (device_type === 'breeze')
@@ -532,20 +533,21 @@ class Switcher extends EventEmitter {
 
 	_connect(port, ip) {
 		return new Promise((resolve, reject) => {
+			this.log(`opening TCP connection to ${ip}:${port}`);
 			var socket = net.connect(port, ip);
 			// 30s keepalive so dead idle connections (overnight, WiFi reassoc, etc.)
 			// are detected within a useful window instead of the OS default ~2 hours.
 			socket.setKeepAlive(true, 30000);
 			socket.once('ready', () => {
-				this.log('successful connection, socket was created');
+				this.log(`TCP connection ready (${ip}:${port})`);
 				resolve(socket);
 			});
 			socket.once('close', (had_error) => {
-				this.log('connection closed, had error:', had_error)
+				this.log(`connection closed (${ip}:${port}), had error:`, had_error)
 				reject(had_error);
 			});
 			socket.once('error', (error) => {
-				this.log('connection rejected, error:', error)
+				this.log(`connection rejected (${ip}:${port}), error:`, error && error.message ? error.message : error)
 				reject(error);
 			});
 		});
@@ -706,7 +708,7 @@ class Switcher extends EventEmitter {
 				let data = "fef052000232a100" + P_SESSION + "340001000000000000000000" + this._get_time_stamp() + "00000000000000000000f0fe" + this.device_key + "00" +
 					this.phone_id + "0000" + this.device_pass + "00000000000000000000000000000000000000000000000000000000";
 				data = this._crc_sign_full_packet_com_key(data, P_KEY);
-				this.log("login...");
+				this.log("_login (old TCP, port 9957) starting...");
 				try {
 					var socket = await this._getsocket();
 				} catch (err) {
@@ -716,6 +718,7 @@ class Switcher extends EventEmitter {
 				this.log('sending data')
 				this.log(data)
 				socket.write(Buffer.from(data, 'hex'));
+				this.log('_login: waiting for response from device...');
 				socket.once('data', (data) => {
 					var result_session = data.toString('hex').substr(16, 8)
 					this.log('received login data:')
@@ -743,7 +746,7 @@ class Switcher extends EventEmitter {
 				let data = "fef030000305a600" + P_SESSION + "ff0301000000" + this.phone_id + "00000000" + this._get_time_stamp() + "00000000000000000000f0fe" +
 					this.device_id + "00";
 				data = this._crc_sign_full_packet_com_key(data, P_KEY);
-				this.log("login...");
+				this.log("_login2 (new TCP, port 10000) starting...");
 				try {
 					var socket = await this._getsocket();
 				} catch (err) {
@@ -753,6 +756,7 @@ class Switcher extends EventEmitter {
 				this.log('sending data')
 				this.log(data)
 				socket.write(Buffer.from(data, 'hex'));
+				this.log('_login2: waiting for response from device...');
 				socket.once('data', (data) => {
 					var result_session = data.toString('hex').substr(16, 8)
 					this.log('received login data:')
@@ -781,7 +785,7 @@ class Switcher extends EventEmitter {
 				data1 = this._crc_sign_full_packet_com_key(data1, P_KEY);
 				let data2 = "fef053000305a100" + P_SESSION + "f50301000000" + this.device_id+ "000000" + this._get_time_stamp() + "00000000000000000000f0fe" +"0000" + this.token + "000000000000000000000000000000000000000000000000000000000000000001"
 				data2 = this._crc_sign_full_packet_com_key(data2, P_KEY);
-				this.log("login1...");
+				this.log("_login3 (token auth, port 10000) step 1 starting...");
 				try {
 					var socket = await this._getsocket();
 				} catch (err) {
@@ -835,6 +839,7 @@ class Switcher extends EventEmitter {
 			this.log('sending data:')
 			this.log(data)
 			socket.write(Buffer.from(data, 'hex'));
+			this.log('_run_power_command: waiting for response from device...');
 			socket.once('data', (data) => {
 				this.log('data received:')
 				this.log(data.toString('hex'))
