@@ -506,16 +506,25 @@ class Switcher extends EventEmitter {
 		try {
 			var socket = await this._connect(this.SWITCHER_PORT, this.switcher_ip);
 			socket.on('error', (error) => {
-				this.log('global error event:', error);
+				this.log('global error event:', error && error.message ? error.message : error);
+				if (this.socket === socket) {
+					this.socket = null;
+					this.p_session = null;
+				}
 			});
 			socket.on('close', (had_error) => {
 				this.log('global close event:', had_error);
+				if (this.socket === socket) {
+					this.socket = null;
+					this.p_session = null;
+				}
 			});
 			this.socket = socket;
 			return socket;
 		}
 		catch (error) {
 			this.socket = null;
+			this.p_session = null;
 			this.emit(ERROR_EVENT, new ConnectionError(this.switcher_ip, this.SWITCHER_PORT));
 			throw error;
 		}
@@ -524,7 +533,9 @@ class Switcher extends EventEmitter {
 	_connect(port, ip) {
 		return new Promise((resolve, reject) => {
 			var socket = net.connect(port, ip);
-			socket.setKeepAlive(true);
+			// 30s keepalive so dead idle connections (overnight, WiFi reassoc, etc.)
+			// are detected within a useful window instead of the OS default ~2 hours.
+			socket.setKeepAlive(true, 30000);
 			socket.once('ready', () => {
 				this.log('successful connection, socket was created');
 				resolve(socket);
@@ -812,8 +823,10 @@ class Switcher extends EventEmitter {
 
 
 	async _run_power_command(command_type) {
-		try {
+		const attempt = async () => {
 			let p_session = await this._login();
+			if (!p_session)
+				throw new Error('login returned no session')
 			let data = "fef05d0002320102" + p_session + "340001" + "000000000000000000" + this._get_time_stamp() + "00000000000000000000f0fe" + this.device_id +
 				"00" + this.phone_id + "0000" + this.device_pass + "000000000000000000000000000000000000000000000000000000000106000" + command_type;
 			data = this._crc_sign_full_packet_com_key(data, P_KEY);
@@ -827,23 +840,37 @@ class Switcher extends EventEmitter {
 				this.log(data.toString('hex'))
 				this.emit(STATE_CHANGED_EVENT, command_type.substr(0, 1));
 			});
+		}
+
+		try {
+			await attempt()
 		} catch (err) {
-			this.log('power command failed:', err && err.message ? err.message : err)
-			this.emit(ERROR_EVENT, err)
+			this.log('power command first attempt failed, retrying once:', err && err.message ? err.message : err)
+			this._reset_connection_state()
+			try {
+				await attempt()
+			} catch (err2) {
+				this.log('power command failed after retry:', err2 && err2.message ? err2.message : err2)
+				this.emit(ERROR_EVENT, err2)
+			}
 		}
 	}
 
 	async _run_general_command(command, precommand = "3701") {
-		try {
+		const attempt = async () => {
 			let data, p_session
 			if(this.token && (this.device_type === 's11' || this.device_type === 's12' || /^sl(mini)?0\d$/.test(this.device_type))){
 				p_session = await this._login3();
 				this.p_session = null;
+				if (!p_session)
+					throw new Error('login3 returned no session')
 				data = "fef0000003050102" + p_session + "000000" + "000000000000000000" + this._get_time_stamp() + "00000000000000000000f0fe" + this.device_id +
 					"00" + this.token + this.device_pass + "000000000000000000000000000000000000000000000000000000" + precommand + this._get_command_length(command + "00000000") + command + "00000000"
 			} else {
 				p_session = await this._login2();
 				this.p_session = null;
+				if (!p_session)
+					throw new Error('login2 returned no session')
 				data = "fef0000003050102" + p_session + "000000" + "000000000000000000" + this._get_time_stamp() + "00000000000000000000f0fe" + this.device_id +
 					"00" + this.phone_id + "0000" + this.device_pass + "000000000000000000000000000000000000000000000000000000" + precommand + this._get_command_length(command) + command
 			}
@@ -858,10 +885,28 @@ class Switcher extends EventEmitter {
 				this.log('data received:')
 				this.log(data.toString('hex'))
 			});
-		} catch (err) {
-			this.log('general command failed:', err && err.message ? err.message : err)
-			this.emit(ERROR_EVENT, err)
 		}
+
+		try {
+			await attempt()
+		} catch (err) {
+			this.log('general command first attempt failed, retrying once:', err && err.message ? err.message : err)
+			this._reset_connection_state()
+			try {
+				await attempt()
+			} catch (err2) {
+				this.log('general command failed after retry:', err2 && err2.message ? err2.message : err2)
+				this.emit(ERROR_EVENT, err2)
+			}
+		}
+	}
+
+	_reset_connection_state() {
+		if (this.socket && !this.socket.destroyed) {
+			try { this.socket.destroy() } catch (e) { /* ignore */ }
+		}
+		this.socket = null;
+		this.p_session = null;
 	}
 
 	_get_time_stamp() {
