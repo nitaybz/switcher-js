@@ -30,6 +30,7 @@ const types = {
 	'030b': 'v3',
 	'0317': 'v4',
 	'030f': 'mini',
+	'031f': 'heater',
 	'0321': 'on_wall',
 	'0c01': 'runner',
 	'0c02': 'runner_mini',
@@ -192,6 +193,27 @@ class SwitcherUDPMessage {
 	extract_swing() {
 		return this.data_hex.substr(281, 1) == '0' ? 'OFF' : 'ON';
 	}
-} 
+
+	// Switcher Heater (031f) UDP broadcast extractors. Offsets verified against
+	// aioswitcher's DatagramParser (bridge.py). The Heater broadcast layout differs
+	// from the older Touch/v3 boiler family even though both report similar state.
+	extract_heater_state() {
+		return this.data_hex.substr(270, 2) == '01' ? 1 : 0;
+	}
+
+	extract_heater_power_consumption() {
+		var section = this.data_hex.substr(274, 4);
+		return parseInt(section.substr(2, 2) + section.substr(0, 2), 16);
+	}
+
+	extract_heater_remaining_seconds() {
+		var section = this.data_hex.substr(326, 8);
+		return parseInt(
+			section.substr(6, 2) +
+			section.substr(4, 2) +
+			section.substr(2, 2) +
+			section.substr(0, 2), 16);
+	}
+}
 
 module.exports = SwitcherUDPMessage

@@ -34,6 +34,7 @@ const LISTENING_PORTS = [SWITCHER_UDP_PORT, SWITCHER_UDP_PORT2, SWITCHER_UDP_POR
 const SWITCHER_TCP_PORT = 9957;
 const SWITCHER_TCP_PORT2 = 10000;
 const OLD_TCP_GROUP = ['power_plug', 'v2_qca', 'v2_esp', 'v3', 'v4', 'mini'];
+const TOKEN_REQUIRED_TYPES = ['s11', 's12', 'sl01', 'sl02', 'sl03', 'slmini01', 'slmini02', 'heater'];
 
 const OFF = 0;
 const ON = 1;
@@ -85,6 +86,7 @@ class Switcher extends EventEmitter {
 		this.device_pass = '00000000';
 		this.newType = !OLD_TCP_GROUP.includes(device_type)
 		this.isBreeze = device_type && device_type === 'breeze'
+		this.isHeater = device_type && device_type === 'heater'
 		this.SWITCHER_PORT = this.newType ? SWITCHER_TCP_PORT2 : SWITCHER_TCP_PORT;
 		this.log = log;
 		this.p_session = null;
@@ -189,6 +191,23 @@ class Switcher extends EventEmitter {
 							remaining_seconds: udp_message.extract_shutdown_remaining_seconds(),
 							default_shutdown_seconds: udp_message.extract_default_shutdown_seconds(),
 							power_consumption: udp_message.extract_power_consumption()
+						}
+					});
+				} else if (device_type === 'heater') {
+					// Switcher Heater (031f) uses a different broadcast layout than the older
+					// boiler family. Default-shutdown is not in the UDP broadcast on this model;
+					// it is only available via the TCP state response.
+					proxy.emit(MESSAGE_EVENT, {
+						device_id: device_id,
+						device_ip: ipaddr,
+						name: device_name,
+						device_key: udp_message.extract_device_key(),
+						type: device_type,
+						state: {
+							power: udp_message.extract_heater_state(),
+							remaining_seconds: udp_message.extract_heater_remaining_seconds(),
+							default_shutdown_seconds: 0,
+							power_consumption: udp_message.extract_heater_power_consumption()
 						}
 					});
 				} else if (device_type === 'breeze') {
@@ -306,11 +325,19 @@ class Switcher extends EventEmitter {
 	}
 
 	turn_off() {
+		if (this.isHeater) {
+			this._run_heater_power_command(OFF, 0);
+			return;
+		}
 		var off_command = OFF + '00' + '00000000';
 		this._run_power_command(off_command);
 	}
 
 	turn_on(duration = 0) {
+		if (this.isHeater) {
+			this._run_heater_power_command(ON, duration);
+			return;
+		}
 		var on_command = ON + '00' + this._timer_value(duration);
 		this._run_power_command(on_command);
 	}
@@ -436,7 +463,14 @@ class Switcher extends EventEmitter {
 	async status() {  // refactor
 		return new Promise(async (resolve, reject) => {
 			let data, p_session
-			if (this.newType) {
+			if (this.isHeater) {
+				if (!this.token) {
+					return reject(new Error('Switcher Heater requires a token. Get yours at https://switcher.co.il/GetKey and pass it to the constructor.'));
+				}
+				// Heater requires the two-step token login before any state query.
+				p_session = await this._login3();
+				data = "fef0300003050103" + p_session + "390001000000000000000000" + this._get_time_stamp() + "00000000000000000000f0fe" + this.device_id + "00"
+			} else if (this.newType) {
 				p_session = await this._login2();
 				data = "fef0300003050103" + p_session + "390001000000000000000000" + this._get_time_stamp() + "00000000000000000000f0fe" + this.device_id + "00"
 			} else {
@@ -449,6 +483,26 @@ class Switcher extends EventEmitter {
 			socket.once('data', (data) => {
 				try {
 					// var device_name = data.toString().substr(40, 32).replace(/\0/g, '');
+					if (this.isHeater) {
+						// Heater TCP state response offsets, verified against aioswitcher's
+						// StateMessageParser (messages.py) get_heater_* methods.
+						const hex = data.toString('hex');
+						const state = hex.substr(152, 2) == '01' ? ON : OFF;
+						let section = hex.substr(168, 8);
+						const power_consumption = parseInt(section.substr(2, 2) + section.substr(0, 2), 16);
+						section = hex.substr(192, 8);
+						const default_shutdown_seconds = parseInt(section.substr(6, 2) + section.substr(4, 2) + section.substr(2, 2) + section.substr(0, 2), 16);
+						section = hex.substr(208, 8);
+						const remaining_seconds = parseInt(section.substr(6, 2) + section.substr(4, 2) + section.substr(2, 2) + section.substr(0, 2), 16);
+						resolve({
+							device_id: this.device_id,
+							power: state,
+							remaining_seconds: remaining_seconds,
+							default_shutdown_seconds: default_shutdown_seconds,
+							power_consumption: power_consumption
+						});
+						return;
+					}
 					if (this.isBreeze) {
 						const data_hex = data.toString('hex')
 						const state = {
@@ -570,6 +624,14 @@ class Switcher extends EventEmitter {
 						remaining_seconds: udp_message.extract_shutdown_remaining_seconds(),
 						default_shutdown_seconds: udp_message.extract_default_shutdown_seconds(),
 						power_consumption: udp_message.extract_power_consumption()
+					})
+				else if (this.isHeater)
+					this.emit(STATUS_EVENT, {
+						device_key: udp_message.extract_device_key(),
+						power: udp_message.extract_heater_state(),
+						remaining_seconds: udp_message.extract_heater_remaining_seconds(),
+						default_shutdown_seconds: 0,
+						power_consumption: udp_message.extract_heater_power_consumption()
 					})
 				else if (this.isBreeze)
 					this.emit(STATUS_EVENT, {
@@ -857,6 +919,59 @@ class Switcher extends EventEmitter {
 			} catch (err2) {
 				this.log('power command failed after retry:', err2 && err2.message ? err2.message : err2)
 				this.emit(ERROR_EVENT, err2)
+			}
+		}
+	}
+
+	async _run_heater_power_command(command_value, duration = 0) {
+		if (!this.token) {
+			const err = new Error('Switcher Heater requires a token. Get yours at https://switcher.co.il/GetKey and pass it to the constructor.');
+			this.log(err.message);
+			this.emit(ERROR_EVENT, err);
+			return;
+		}
+
+		const attempt = async () => {
+			const p_session = await this._login3();
+			this.p_session = null;
+			if (!p_session)
+				throw new Error('login3 returned no session');
+
+			const timer = duration > 0 ? this._timer_value(duration) : '00000000';
+			// Heater control hex_pos is "0" + command_value + timer (32-bit LE seconds),
+			// total 10 hex chars / 5 bytes. Verified against aioswitcher control_device.
+			const hex_pos = '0' + command_value + timer;
+			const precommand = '3723'; // CONTROL_DEVICE_PRECOMMAND
+
+			// GENERAL_TOKEN_COMMAND uses a hard-coded session id of "00000000" because
+			// the auth credential is the token in the body, not the login session id.
+			// Mirrors aioswitcher packets.GENERAL_TOKEN_COMMAND verbatim.
+			let data = "fef0000003050102" + P_SESSION + "000000" + "000000000000000000"
+				+ this._get_time_stamp() + "00000000000000000000f0fe" + this.device_id
+				+ "00" + this.token + this.device_pass
+				+ "000000000000000000000000000000000000000000000000000000"
+				+ precommand + hex_pos;
+			data = this._set_message_length(data);
+			data = this._crc_sign_full_packet_com_key(data, P_KEY);
+			const socket = await this._getsocket();
+			this.log(`sending heater ${command_value === ON ? 'ON' : 'OFF'} command (duration=${duration}m)`);
+			socket.write(Buffer.from(data, 'hex'));
+			socket.once('data', (resp) => {
+				this.log('heater command response: ' + resp.toString('hex'));
+				this.emit(STATE_CHANGED_EVENT, String(command_value));
+			});
+		};
+
+		try {
+			await attempt();
+		} catch (err) {
+			this.log('heater power command first attempt failed, retrying once:', err && err.message ? err.message : err);
+			this._reset_connection_state();
+			try {
+				await attempt();
+			} catch (err2) {
+				this.log('heater power command failed after retry:', err2 && err2.message ? err2.message : err2);
+				this.emit(ERROR_EVENT, err2);
 			}
 		}
 	}
