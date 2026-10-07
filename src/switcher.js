@@ -163,9 +163,26 @@ class Switcher extends EventEmitter {
 		var proxy = new EventEmitter.EventEmitter();
 
 		const sockets = []
+		let closed = false, closing = null
+		proxy.close = () => {
+			if (closing) return closing
+			closed = true
+			log('closing listen sockets')
+			closing = Promise.all(sockets.map(socket => new Promise(resolve => {
+				socket.removeAllListeners('message')
+				socket.once('close', resolve)
+				try { socket.close() } catch (error) {
+					socket.removeListener('close', resolve)
+					if (error.code !== 'ERR_SOCKET_DGRAM_NOT_RUNNING') log(error)
+					resolve()
+				}
+			}))).then(() => { sockets.length = 0 })
+			return closing
+		}
 
 		LISTENING_PORTS.forEach(switcher_port => {
 			var socket = dgram.createSocket('udp4', (raw_msg, rinfo) => {
+				if (closed) return
 				var ipaddr = rinfo.address;
 				if (!SwitcherUDPMessage.is_valid(raw_msg)) {
 					return; // ignoring - not a switcher broadcast message
@@ -302,20 +319,14 @@ class Switcher extends EventEmitter {
 			})
 
 			socket.on('error', (error) => {
+				if (closed) return
+				proxy.close()
 				proxy.emit(ERROR_EVENT, error);
-				socket.close();
-				socket = null;
 			});
 			socket.bind(switcher_port, SWITCHER_UDP_IP);
 			sockets.push(socket)
 		})
 
-		proxy.close = () => {
-			log('closing listen socket');
-			sockets.forEach(socket => {
-				socket.close();
-			})
-		}
 		return proxy;
 	}
 
@@ -542,61 +553,66 @@ class Switcher extends EventEmitter {
 	}
 
 	close() {
-		if (this.socket && !this.socket.destroyed) {
-			this.log('closing sockets');
-			this.socket.destroy();
-			this.log('main socket is closed');
-		}
-		if (this.status_socket && !this.status_socket.destroyed) {
-			this.log('closing sockets');
-			this.status_socket.close();
-			this.log('status socket is closed');
+		this._closed = true;
+		const socket = this.socket, status = this.status_socket;
+		this.socket = null;
+		this.status_socket = null;
+		this.p_session = null;
+		if (this._connectingSocket && !this._connectingSocket.destroyed) this._connectingSocket.destroy();
+		if (socket && !socket.destroyed) socket.destroy();
+		if (status) {
+			try { status.close(); } catch (error) {
+				if (error.code !== 'ERR_SOCKET_DGRAM_NOT_RUNNING') this.log(error);
+			}
 		}
 	}
 
 	async _getsocket() {
-		if (this.socket && !this.socket.destroyed) {
-			return await this.socket;
-		}
-		try {
-			var socket = await this._connect(this.SWITCHER_PORT, this.switcher_ip);
-			socket.on('error', (error) => {
-				this.log('global error event:', error && error.message ? error.message : error);
-				if (this.socket === socket) {
-					this.socket = null;
-					this.p_session = null;
+		if (this._closed) throw new ConnectionError(this.switcher_ip, this.SWITCHER_PORT);
+		if (this.socket && !this.socket.destroyed) return this.socket;
+		if (this._connecting) return this._connecting;
+		this._connecting = (async () => {
+			try {
+				const socket = await this._connect(this.SWITCHER_PORT, this.switcher_ip);
+				if (this._closed) {
+					socket.destroy();
+					throw new ConnectionError(this.switcher_ip, this.SWITCHER_PORT);
 				}
-			});
-			socket.on('close', (had_error) => {
-				this.log('global close event:', had_error);
-				if (this.socket === socket) {
-					this.socket = null;
-					this.p_session = null;
-				}
-			});
-			this.socket = socket;
-			return socket;
-		}
-		catch (error) {
-			this.socket = null;
-			this.p_session = null;
-			this.emit(ERROR_EVENT, new ConnectionError(this.switcher_ip, this.SWITCHER_PORT));
-			throw error;
-		}
+				socket.on('error', error => {
+					this.log('global error event:', error && error.message ? error.message : error);
+					if (this.socket === socket) { this.socket = null; this.p_session = null; }
+				});
+				socket.on('close', had_error => {
+					this.log('global close event:', had_error);
+					if (this.socket === socket) { this.socket = null; this.p_session = null; }
+				});
+				this.socket = socket;
+				return socket;
+			} catch (error) {
+				this.socket = null;
+				this.p_session = null;
+				if (!this._closed) this.emit(ERROR_EVENT, new ConnectionError(this.switcher_ip, this.SWITCHER_PORT));
+				throw error;
+			}
+		})();
+		try { return await this._connecting; } finally { this._connecting = null; }
 	}
 
 	_connect(port, ip) {
 		return new Promise((resolve, reject) => {
 			this.log(`opening TCP connection to ${ip}:${port}`);
 			var socket = net.connect(port, ip);
+			this._connectingSocket = socket;
 			// 30s keepalive so dead idle connections (overnight, WiFi reassoc, etc.)
 			// are detected within a useful window instead of the OS default ~2 hours.
 			socket.setKeepAlive(true, 30000);
 			socket.once('ready', () => {
+				if (this._connectingSocket === socket) this._connectingSocket = null;
 				this.log(`TCP connection ready (${ip}:${port})`);
 				resolve(socket);
 			});
 			socket.once('close', (had_error) => {
+				if (this._connectingSocket === socket) this._connectingSocket = null;
 				this.log(`connection closed (${ip}:${port}), had error:`, had_error)
 				reject(had_error);
 			});
@@ -787,11 +803,11 @@ class Switcher extends EventEmitter {
 					this.log(data.toString('hex'))
 					// todo: make sure result_session exists
 					this.log('received session id: ' + result_session);
+					socket.removeListener('error', onError);
 					resolve(result_session); // returning _p_session after a successful login
 				});
-				this.socket.once('error', (error) => {
-					reject(error);
-				});
+				const onError = error => reject(error);
+				socket.once('error', onError);
 			});
 		}
 		catch (error) {
@@ -825,11 +841,11 @@ class Switcher extends EventEmitter {
 					this.log(data.toString('hex'))
 					// todo: make sure result_session exists
 					this.log('received session id: ' + result_session);
+					socket.removeListener('error', onError);
 					resolve(result_session); // returning _p_session after a successful login
 				});
-				this.socket.once('error', (error) => {
-					reject(error);
-				});
+				const onError = error => reject(error);
+				socket.once('error', onError);
 			});
 		}
 		catch (error) {
@@ -871,12 +887,12 @@ class Switcher extends EventEmitter {
 						this.log('received login data2:')
 						this.log(data2.toString('hex'))
 						this.log('received session id: ' + result_session);
+						socket.removeListener('error', onError);
 						resolve(result_session); // returning _p_session after a successful login
 					});
 				});
-				this.socket.once('error', (error) => {
-					reject(error);
-				});
+				const onError = error => reject(error);
+				socket.once('error', onError);
 			});
 		}
 		catch (error) {
