@@ -446,7 +446,7 @@ class Switcher extends EventEmitter {
 				this._run_general_command(command);
 
 				if (this.breeze_remote.separated_swing && state.swing === 'ON') {
-					setTimeout(this.set_separated_swing_command, 1000, true)
+					setTimeout(() => this.set_separated_swing_command(true), 1000)
 				}
 
 			})
